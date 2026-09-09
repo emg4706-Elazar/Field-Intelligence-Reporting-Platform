@@ -1,11 +1,11 @@
-﻿
+﻿using System.Text.Json.Serialization;
 
 namespace Consumer.Models;
 
-public class IncomingReport
+public class StoredReport
 {
     public string? ReportId { get; set; }
-    public string? Timestamp { get; set; }
+    public DateTime Timestamp { get; set; }
     public string? AgentId { get; set; }
     public string? Unit { get; set; }
     public string? Threater { get; set; }
@@ -18,4 +18,26 @@ public class IncomingReport
 
     public string? SubjectId { get; set; }
     public string? SubjectType { get; set; }
+}
+
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum ReportTypes
+{
+    Observation,
+    Movement,
+    Meeting,
+    Access,
+    Communication,
+    Logistics,
+    Incident
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum Priorityes
+{
+    Low,
+    Medium,
+    High,
+    Critical
 }
