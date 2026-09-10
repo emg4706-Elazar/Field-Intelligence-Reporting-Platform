@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="confluent.Kafka" Version="2.15.0" />
+    <PackageReference Include="Elastic.Clients.Elasticsearch" Version="9.5.2" />
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.12" />
     <PackageReference Include="microsoft.Extensions.Configuration.Json" Version="10.0.12" />
     <PackageReference Include="microsoft.Extensions.dependencyInjection" Version="10.0.12" />

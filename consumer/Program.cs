@@ -1,12 +1,15 @@
 ﻿using Confluent.Kafka;
 using Consumer.Models;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Consumer.Services;
+using Elastic.Clients.Elasticsearch;
 
 namespace Consumer;
 
 public class Program
 {
-    static void Main(string[] args)
+    static async Task Main(string[] args)
     {
         //================ Setup Configuration ==============
         var configuration = new ConfigurationBuilder()
@@ -14,7 +17,7 @@ public class Program
             .AddJsonFile(
                 "appsettings.json",
                 optional: false,
-                reloadOnChange: true)
+                reloadOnChange: false)
             .AddEnvironmentVariables()
             .Build();
 
@@ -27,11 +30,11 @@ public class Program
             ?? throw new InvalidOperationException(
                 "Failed: 'topicName' is missing.");
 
-        var groupId = configuration["Kafka:GroupId"]
+        var groupId = configuration["Broker:GroupId"]
             ?? throw new InvalidOperationException(
                 "Failed: 'GroupId' is missing.");
 
-        // elaticsearch configuration
+        // Elaticsearch configuration
         var elasticUrl = configuration["Elasticsearch:Url"]
             ?? throw new InvalidOperationException(
                 "Failed: URL to 'elasticsearch' is missing.");
@@ -40,13 +43,74 @@ public class Program
             ?? throw new InvalidOperationException(
                 "Failed: 'indexName' is missing.");
 
+        var elasticSettings =
+            new ElasticsearchClientSettings(
+                new Uri(elasticUrl));
+
+        // Create the elastic connection
+        var elasticClient =
+            new ElasticsearchClient(elasticSettings);
+
+        // ========== Inject The Dependencies ========
+        var services = new ServiceCollection();
+
+        services.AddSingleton(elasticClient);
+
+        services.AddSingleton<
+            ElasticsearchReportService>(
+                serviceProvider =>
+                {
+                    var client =
+                        serviceProvider
+                            .GetRequiredService<
+                                ElasticsearchClient>();
+
+                    return new ElasticsearchReportService(
+                        client,
+                        indexName);
+                });
+
+        services.AddSingleton<
+            ReportValidationService>();
+
+        services.AddSingleton<ReportProcessorService>();
+
+        // Generate the services
+        using var serviceProvider = services
+            .BuildServiceProvider();
+
+        var reportProcessor =
+            serviceProvider
+            .GetRequiredService<ReportProcessorService>();
+
+        var elasticsearchService =
+            serviceProvider
+            .GetRequiredService<ElasticsearchReportService>();
+
+        // Check availablity
+        bool elasticsearchAvailable =
+            await elasticsearchService.IsAvailableAsync();
+
+        if (!elasticsearchAvailable)
+        {
+            throw new InvalidOperationException(
+                "Elasticsearch is unavailable.");
+        }
+
+        Console.WriteLine(
+            "Connected to Elasticsearch successfully.");
+
+        // Ensure the index exists
+        await elasticsearchService
+            .EnsureIndexExistsAsync();
+
 
         // ========= Generate consumer ===========
         // consumer configuration
         var consumerConfiguration = new ConsumerConfig
         {
             BootstrapServers = bootstrapServers,
-            GroupId = configuration["Broker:GroupId"],
+            GroupId = groupId,
             AutoOffsetReset = AutoOffsetReset.Earliest,
             EnableAutoCommit = false
         };
@@ -56,12 +120,12 @@ public class Program
             new ConsumerBuilder<Ignore, string>(
                 consumerConfiguration).Build();
 
-
         // follow after this topic
         consumer.Subscribe(topicName);
 
         Console.WriteLine(
             $"Listening to topic {topicName}.");
+
 
         // ============ Consume Loop ==========
         try
@@ -77,9 +141,20 @@ public class Program
 
                 string jsonMessage = result.Message.Value;
 
-                consumer.Commit(result);
+                ProcessingResult processingResult =
+                    await reportProcessor.ProcessAsync(
+                        jsonMessage);
 
-                Console.WriteLine(jsonMessage);
+                if (processingResult == ProcessingResult.Retry)
+                {
+                    Console.WriteLine(
+                    "processing failed temporarily. " +
+                    "Consumer will stop without committing");
+
+                    break;
+                }
+
+                consumer.Commit(result);
             }
         }
         finally
