@@ -1,6 +1,4 @@
-﻿using Confluent.Kafka;
-using Consumer.Models;
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Consumer.Services;
 using Elastic.Clients.Elasticsearch;
@@ -51,11 +49,14 @@ public class Program
         var elasticClient =
             new ElasticsearchClient(elasticSettings);
 
+
         // ========== Inject The Dependencies ========
         var services = new ServiceCollection();
 
+        // Register ElasticsearchClient
         services.AddSingleton(elasticClient);
 
+        // Register ElasticService
         services.AddSingleton<
             ElasticsearchReportService>(
                 serviceProvider =>
@@ -70,24 +71,42 @@ public class Program
                         indexName);
                 });
 
+        // Register ValidationService
         services.AddSingleton<
             ReportValidationService>();
 
+        // Register ProcessorService
         services.AddSingleton<ReportProcessorService>();
 
-        // Generate the services
+        // Register ConsumerService
+        services.AddSingleton<KafkaConsumerService>(
+            serviceProvider =>
+            {
+                var reportProcessor =
+                    serviceProvider.GetRequiredService<
+                        ReportProcessorService>();
+
+                return new KafkaConsumerService(
+                    reportProcessor,
+                    bootstrapServers,
+                    topicName,
+                    groupId);
+            });
+
+
+        // ========== Generate The Services ============
         using var serviceProvider = services
             .BuildServiceProvider();
-
-        var reportProcessor =
-            serviceProvider
-            .GetRequiredService<ReportProcessorService>();
 
         var elasticsearchService =
             serviceProvider
             .GetRequiredService<ElasticsearchReportService>();
 
-        // Check availablity
+        var kafkaConsumer =
+            serviceProvider
+            .GetRequiredService<KafkaConsumerService>();
+
+        // Check availability
         bool elasticsearchAvailable =
             await elasticsearchService.IsAvailableAsync();
 
@@ -104,63 +123,7 @@ public class Program
         await elasticsearchService
             .EnsureIndexExistsAsync();
 
-
-        // ========= Generate consumer ===========
-        // consumer configuration
-        var consumerConfiguration = new ConsumerConfig
-        {
-            BootstrapServers = bootstrapServers,
-            GroupId = groupId,
-            AutoOffsetReset = AutoOffsetReset.Earliest,
-            EnableAutoCommit = false
-        };
-
-        // Create the consumer
-        using var consumer =
-            new ConsumerBuilder<Ignore, string>(
-                consumerConfiguration).Build();
-
-        // follow after this topic
-        consumer.Subscribe(topicName);
-
-        Console.WriteLine(
-            $"Listening to topic {topicName}.");
-
-
-        // ============ Consume Loop ==========
-        try
-        {
-            while (true)
-            {
-                var result =
-                    consumer.Consume(
-                        TimeSpan.FromSeconds(1));
-
-                if (result?.Message?.Value is null)
-                    continue;
-
-                string jsonMessage = result.Message.Value;
-
-                ProcessingResult processingResult =
-                    await reportProcessor.ProcessAsync(
-                        jsonMessage);
-
-                if (processingResult == ProcessingResult.Retry)
-                {
-                    Console.WriteLine(
-                    "processing failed temporarily. " +
-                    "Consumer will stop without committing");
-
-                    break;
-                }
-
-                consumer.Commit(result);
-            }
-        }
-        finally
-        {
-            consumer.Close();
-            Console.WriteLine("Consumer closed.");
-        }
+        // ========== Run The Consumer ===========
+        await kafkaConsumer.RunAsync();
     }
 }

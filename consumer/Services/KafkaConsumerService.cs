@@ -1,12 +1,90 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using Confluent.Kafka;
+using Consumer.Models;
+using Elastic.Clients.Elasticsearch.Tasks;
+using System;
+using System.Text.RegularExpressions;
 
-namespace Consumer.Services
+namespace Consumer.Services;
+
+public class KafkaConsumerService
 {
-    internal class KafkaConsumerService
+    private readonly ReportProcessorService
+        _reportProcessor;
+    private readonly string _bootstrapServers;
+    private readonly string _topicName;
+    private readonly string _groupId;
+
+    public KafkaConsumerService(
+        ReportProcessorService
+        reportProcessor,
+        string bootstrapServers,
+        string topicName,
+        string groupId)
     {
+        _reportProcessor = reportProcessor;
+        _bootstrapServers = bootstrapServers;
+        _topicName = topicName;
+        _groupId = groupId;
+    }
+
+    public async Task RunAsync()
+    {
+        // consumer configuration
+        var consumerConfiguration = new ConsumerConfig
+        {
+            BootstrapServers = _bootstrapServers,
+            GroupId = _groupId,
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            EnableAutoCommit = false
+        };
+
+        // Create the consumer
+        using var consumer =
+            new ConsumerBuilder<Ignore, string>(
+                consumerConfiguration).Build();
+
+        // follow after this topic
+        consumer.Subscribe(_topicName);
+
+        Console.WriteLine(
+            $"Listening to topic {_topicName}.");
+
+
+        // ============ Consume Loop ==========
+        try
+        {
+            while (true)
+            {
+                var result =
+                    consumer.Consume(
+                        TimeSpan.FromSeconds(1));
+
+                if (result?.Message?.Value is null)
+                    continue;
+
+                string jsonMessage = result.Message.Value;
+
+                ProcessingResult processingResult =
+                    await _reportProcessor.ProcessAsync(
+                        jsonMessage);
+
+                if (processingResult == ProcessingResult.Retry)
+                {
+                    Console.WriteLine(
+                    "processing failed temporarily. " +
+                    "Consumer will stop without committing");
+
+                    break;
+                }
+
+                consumer.Commit(result);
+            }
+        }
+        finally
+        {
+            consumer.Close();
+            Console.WriteLine("Consumer closed.");
+        }
     }
 }
+
