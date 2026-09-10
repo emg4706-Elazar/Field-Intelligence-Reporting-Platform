@@ -21,7 +21,8 @@ public static class ReportMapper
             Location = incomingReport.Location!,
             ReportType = incomingReport.ReportType!,
             Priority = incomingReport.Priority!,
-            SourceType = incomingReport.Message!,
+            SourceType = incomingReport.SourceType!,
+            Message = incomingReport.Message!,
 
             SubjectId = incomingReport.SubjectId,
             SubjectType = incomingReport.SubjectType,

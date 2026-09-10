@@ -1,5 +1,27 @@
 services:
 
+  consumer:
+    build:
+      context: ./consumer
+      dockerfile: Dockerfile
+
+    container_name: csharp-consumer
+
+    environment:
+      Broker__BootstrapServers: broker:19092
+      Broker__Topic: messages
+      Broker__GroupId: field-intelligence-consumer
+
+      Elasticsearch__Url: http://elasticsearch:9200
+      Elasticsearch__IndexName: field-reports
+
+    depends_on:
+      broker:
+        condition: service_healthy
+
+      elasticsearch:
+        condition: service_healthy
+
 
   broker:
     image: apache/kafka:latest
@@ -64,6 +86,17 @@ services:
       discovery.type: single-node
       xpack.security.enabled: "false"
 
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fs http://localhost:9200/_cluster/health?wait_for_status=yellow > /dev/null"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
 
   kibana:
     image: docker.elastic.co/kibana/kibana:9.1.4
@@ -76,7 +109,8 @@ services:
       ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
 
     depends_on:
-      - elasticsearch
+      elasticsearch:
+        condition: service_healthy
 
 
       

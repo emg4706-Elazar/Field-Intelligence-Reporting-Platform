@@ -1,5 +1,6 @@
 ﻿using Consumer.Models;
 using Elastic.Clients.Elasticsearch;
+using Microsoft.Extensions.Logging;
 
 namespace Consumer.Services;
 
@@ -7,11 +8,14 @@ public class ElasticsearchReportService
 {
     private readonly ElasticsearchClient _client;
     private readonly string _indexName;
+    private readonly ILogger<ElasticsearchReportService> _logger;
 
     public ElasticsearchReportService(
         ElasticsearchClient client,
-        string indexName)
+        string indexName,
+        ILogger<ElasticsearchReportService> logger)
     {
+        _logger = logger;
         _client = client;
         _indexName = indexName;
     }
@@ -33,16 +37,21 @@ public class ElasticsearchReportService
 
         if (!existsResponse.IsValidResponse)
         {
+            _logger.LogError(
+                "Failed to check whether Elasticsearch index " +
+                "{IndexName} exists. {Details}",
+                _indexName,
+                existsResponse.DebugInformation);
+
             throw new InvalidOperationException(
-                $"Failed to check whether index " +
-                $"'{_indexName}' exists. " +
-                $"{existsResponse.DebugInformation}");
+                $"Failed to check whether index '{_indexName}' exists.");
         }
 
         if (existsResponse.Exists)
         {
-            Console.WriteLine(
-                $"Index '{_indexName}' already exists.");
+            _logger.LogInformation(
+                "Index '{IndexName}' already exists.",
+                _indexName);
 
             return;
         }
@@ -101,14 +110,20 @@ public class ElasticsearchReportService
 
         if (!createResponse.IsValidResponse)
         {
+            _logger.LogError(
+                "Failed to create index '{IndexName}'. " +
+                "{Details}",
+                _indexName,
+                createResponse.DebugInformation);
+
+
             throw new InvalidOperationException(
-                $"Failed to create index " +
-                $"'{_indexName}'. " +
-                $"{createResponse.DebugInformation}");
+                $"Failed to create index '{_indexName}'.");
         }
 
-        Console.WriteLine(
-            $"Index '{_indexName}' created successfully.");
+        _logger.LogInformation(
+            "Elasticsearch index {indexName} created successfully.",
+            _indexName);
     }
 
 
@@ -126,33 +141,38 @@ public class ElasticsearchReportService
 
             if (response.IsValidResponse)
             {
-                Console.WriteLine(
-                    $"Report '{report.ReportId}' saved.");
+                _logger.LogInformation(
+                    "Report {ReportId} saved successfully.",
+                    report.ReportId);
 
                 return StoreResult.Created;
             }
 
             if (response.ApiCallDetails.HttpStatusCode == 409)
             {
-                Console.WriteLine(
-                    $"Duplicate report rejected: " +
-                    $"{report.ReportId}");
+                _logger.LogWarning(
+                    "Duplicate report {ReportId} was not saved.",
+                    report.ReportId);
 
                 return StoreResult.Duplicate;
             }
 
-            Console.WriteLine(
-                $"Failed to save report " +
-                $"'{report.ReportId}'. " +
-                $"{response.DebugInformation}");
+            _logger.LogError(
+                "Failed to save report {ReportId}. " +
+                "{Details}",
+                report.ReportId,
+                response.DebugInformation);
 
             return StoreResult.Failed;
         }
         catch (Exception ex)
         {
-            Console.WriteLine(
-                $"Elasticsearch communication failed: " +
-                $"{ex.Message}");
+            _logger.LogError(
+                ex,
+                "Elasticsearch communication failed while saving " +
+                "report {ReportId} to index {IndexName}.",
+                report.ReportId,
+                _indexName);
 
             return StoreResult.Failed;
         }

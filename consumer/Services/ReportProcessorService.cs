@@ -2,6 +2,7 @@
 using Consumer.Models;
 using System;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 
 namespace Consumer.Services;
@@ -11,13 +12,16 @@ public class ReportProcessorService
     private readonly ReportValidationService _validator;
     private readonly ElasticsearchReportService
         _elasticsearchService;
+    private readonly ILogger<ReportProcessorService> _logger;
 
     public ReportProcessorService(
         ReportValidationService validator,
-        ElasticsearchReportService elasticsearchService)
+        ElasticsearchReportService elasticsearchService,
+        ILogger<ReportProcessorService> logger)
     {
         _validator = validator;
         _elasticsearchService = elasticsearchService;
+        _logger = logger;
     }
 
     public async Task<ProcessingResult> ProcessAsync(
@@ -34,8 +38,9 @@ public class ReportProcessorService
         }
         catch (JsonException ex)
         {
-            Console.WriteLine(
-                $"Rejected: Invalid JSON. {ex.Message}");
+            _logger.LogWarning(
+                ex,
+                "Report rejected because the JSON is invalid.");
 
             return ProcessingResult.Handled;
         }
@@ -43,8 +48,8 @@ public class ReportProcessorService
         // Whether returned null
         if (report is null)
         {
-            Console.WriteLine(
-                "Rejected: Message contains no report.");
+            _logger.LogWarning(
+                "Report rejected because it contains no report.");
 
             return ProcessingResult.Handled;
         }
@@ -55,9 +60,11 @@ public class ReportProcessorService
 
         if (!validationResult.IsValid)
         {
-            Console.WriteLine($"Report rejected: " +
-                $"{validationResult.ErrorMessage}");
-
+            _logger.LogWarning(
+                "Report {ReportId} rejected: {ValidationError}",
+                report.ReportId,
+                validationResult.ErrorMessage);
+  
             return ProcessingResult.Handled;
         }
 
@@ -65,8 +72,9 @@ public class ReportProcessorService
         StoredReport storedReport =
             ReportMapper.ToStoredReport(report);
 
-        Console.WriteLine(
-            $"Valid Report: {storedReport.ReportId}");
+        _logger.LogInformation(
+            "Report {ReportId} passed validation",
+            storedReport.ReportId);
 
         // Added to elasticsearch
         StoreResult storeResult =

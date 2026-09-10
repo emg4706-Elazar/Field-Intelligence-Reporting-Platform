@@ -2,6 +2,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Consumer.Services;
 using Elastic.Clients.Elasticsearch;
+using Microsoft.Extensions.Logging;
 
 namespace Consumer;
 
@@ -53,6 +54,15 @@ public class Program
         // ========== Inject The Dependencies ========
         var services = new ServiceCollection();
 
+        // Register the logger
+        services.AddLogging(logging =>
+        {
+            logging.ClearProviders();
+            logging.AddConfiguration(
+                configuration.GetSection("Logging"));
+            logging.AddConsole();
+        });
+
         // Register ElasticsearchClient
         services.AddSingleton(elasticClient);
 
@@ -65,10 +75,15 @@ public class Program
                         serviceProvider
                             .GetRequiredService<
                                 ElasticsearchClient>();
+                    var logger =
+                        serviceProvider
+                            .GetRequiredService<ILogger<
+                                ElasticsearchReportService>>();
 
                     return new ElasticsearchReportService(
                         client,
-                        indexName);
+                        indexName,
+                        logger);
                 });
 
         // Register ValidationService
@@ -86,17 +101,26 @@ public class Program
                     serviceProvider.GetRequiredService<
                         ReportProcessorService>();
 
+                var logger =
+                    serviceProvider.GetRequiredService<
+                        ILogger<KafkaConsumerService>>();
+
                 return new KafkaConsumerService(
                     reportProcessor,
                     bootstrapServers,
                     topicName,
-                    groupId);
+                    groupId,
+                    logger);
             });
 
 
         // ========== Generate The Services ============
         using var serviceProvider = services
             .BuildServiceProvider();
+
+        var logger =
+            serviceProvider
+            .GetRequiredService<ILogger<Program>>();
 
         var elasticsearchService =
             serviceProvider
@@ -112,13 +136,16 @@ public class Program
 
         if (!elasticsearchAvailable)
         {
-            throw new InvalidOperationException(
-                "Elasticsearch is unavailable.");
+            logger.LogCritical(
+                "Elasticsearch is unavailable. " +
+                "The consumer cannot start.");
+
+            return;
         }
 
-        Console.WriteLine(
-            "Connected to Elasticsearch successfully.");
-
+        logger.LogInformation(
+            "Connected to Elasticsearch successfully");
+        
         // Ensure the index exists
         await elasticsearchService
             .EnsureIndexExistsAsync();
