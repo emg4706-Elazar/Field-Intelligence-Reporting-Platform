@@ -1,12 +1,14 @@
-﻿using Confluent.Kafka;
-using Consumer.Models;
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Consumer.Services;
+using Elastic.Clients.Elasticsearch;
+using Microsoft.Extensions.Logging;
 
 namespace Consumer;
 
 public class Program
 {
-    static void Main(string[] args)
+    static async Task Main(string[] args)
     {
         //================ Setup Configuration ==============
         var configuration = new ConfigurationBuilder()
@@ -14,7 +16,7 @@ public class Program
             .AddJsonFile(
                 "appsettings.json",
                 optional: false,
-                reloadOnChange: true)
+                reloadOnChange: false)
             .AddEnvironmentVariables()
             .Build();
 
@@ -27,11 +29,11 @@ public class Program
             ?? throw new InvalidOperationException(
                 "Failed: 'topicName' is missing.");
 
-        var groupId = configuration["Kafka:GroupId"]
+        var groupId = configuration["Broker:GroupId"]
             ?? throw new InvalidOperationException(
                 "Failed: 'GroupId' is missing.");
 
-        // elaticsearch configuration
+        // Elaticsearch configuration
         var elasticUrl = configuration["Elasticsearch:Url"]
             ?? throw new InvalidOperationException(
                 "Failed: URL to 'elasticsearch' is missing.");
@@ -40,52 +42,115 @@ public class Program
             ?? throw new InvalidOperationException(
                 "Failed: 'indexName' is missing.");
 
+        var elasticSettings =
+            new ElasticsearchClientSettings(
+                new Uri(elasticUrl));
 
-        // ========= Generate consumer ===========
-        // consumer configuration
-        var consumerConfiguration = new ConsumerConfig
+        // Create the elastic connection
+        var elasticClient =
+            new ElasticsearchClient(elasticSettings);
+
+
+        // ========== Inject The Dependencies ========
+        var services = new ServiceCollection();
+
+        // Register the logger
+        services.AddLogging(logging =>
         {
-            BootstrapServers = bootstrapServers,
-            GroupId = configuration["Broker:GroupId"],
-            AutoOffsetReset = AutoOffsetReset.Earliest,
-            EnableAutoCommit = false
-        };
+            logging.ClearProviders();
+            logging.AddConfiguration(
+                configuration.GetSection("Logging"));
+            logging.AddConsole();
+        });
 
-        // Create the consumer
-        using var consumer =
-            new ConsumerBuilder<Ignore, string>(
-                consumerConfiguration).Build();
+        // Register ElasticsearchClient
+        services.AddSingleton(elasticClient);
 
+        // Register ElasticService
+        services.AddSingleton<
+            ElasticsearchReportService>(
+                serviceProvider =>
+                {
+                    var client =
+                        serviceProvider
+                            .GetRequiredService<
+                                ElasticsearchClient>();
+                    var logger =
+                        serviceProvider
+                            .GetRequiredService<ILogger<
+                                ElasticsearchReportService>>();
 
-        // follow after this topic
-        consumer.Subscribe(topicName);
+                    return new ElasticsearchReportService(
+                        client,
+                        indexName,
+                        logger);
+                });
 
-        Console.WriteLine(
-            $"Listening to topic {topicName}.");
+        // Register ValidationService
+        services.AddSingleton<
+            ReportValidationService>();
 
-        // ============ Consume Loop ==========
-        try
-        {
-            while (true)
+        // Register ProcessorService
+        services.AddSingleton<ReportProcessorService>();
+
+        // Register ConsumerService
+        services.AddSingleton<KafkaConsumerService>(
+            serviceProvider =>
             {
-                var result =
-                    consumer.Consume(
-                        TimeSpan.FromSeconds(1));
+                var reportProcessor =
+                    serviceProvider.GetRequiredService<
+                        ReportProcessorService>();
 
-                if (result?.Message?.Value is null)
-                    continue;
+                var logger =
+                    serviceProvider.GetRequiredService<
+                        ILogger<KafkaConsumerService>>();
 
-                string jsonMessage = result.Message.Value;
+                return new KafkaConsumerService(
+                    reportProcessor,
+                    bootstrapServers,
+                    topicName,
+                    groupId,
+                    logger);
+            });
 
-                consumer.Commit(result);
 
-                Console.WriteLine(jsonMessage);
-            }
-        }
-        finally
+        // ========== Generate The Services ============
+        using var serviceProvider = services
+            .BuildServiceProvider();
+
+        var logger =
+            serviceProvider
+            .GetRequiredService<ILogger<Program>>();
+
+        var elasticsearchService =
+            serviceProvider
+            .GetRequiredService<ElasticsearchReportService>();
+
+        var kafkaConsumer =
+            serviceProvider
+            .GetRequiredService<KafkaConsumerService>();
+
+        // Check availability
+        bool elasticsearchAvailable =
+            await elasticsearchService.IsAvailableAsync();
+
+        if (!elasticsearchAvailable)
         {
-            consumer.Close();
-            Console.WriteLine("Consumer closed.");
+            logger.LogCritical(
+                "Elasticsearch is unavailable. " +
+                "The consumer cannot start.");
+
+            return;
         }
+
+        logger.LogInformation(
+            "Connected to Elasticsearch successfully");
+        
+        // Ensure the index exists
+        await elasticsearchService
+            .EnsureIndexExistsAsync();
+
+        // ========== Run The Consumer ===========
+        await kafkaConsumer.RunAsync();
     }
 }
